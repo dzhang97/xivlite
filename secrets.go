@@ -318,18 +318,19 @@ func askOTPSecret(cfgPath string, saved, required bool) error {
 }
 
 // askGamePath accepts the install folder, its game/ or boot/ folder, or an exe inside them.
-func askGamePath(cfgPath, current string) error {
-	prompt := "Game folder, holding boot/ and game/ (Enter to skip; the Steam command names it): "
+// It returns the folder when the game is not there yet and should be installed into it.
+func askGamePath(cfgPath, current string) (string, error) {
+	prompt := "Game folder, holding boot/ and game/, or where to install the game (Enter to skip): "
 	if current != "" {
 		prompt = fmt.Sprintf("Game folder [%s]: ", current)
 	}
 	for tries := 0; tries < 3; tries++ {
 		path, err := readLine(prompt)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if path = expandHome(strings.Trim(strings.TrimSpace(path), `"'`)); path == "" {
-			return nil
+			return "", nil
 		}
 		if abs, err := filepath.Abs(path); err == nil {
 			path = abs
@@ -340,12 +341,19 @@ func askGamePath(cfgPath, current string) error {
 				continue
 			}
 			if problem = (install{root: root}).validate(); problem == nil {
-				return setConfigValue(cfgPath, "game_path", root)
+				return "", setConfigValue(cfgPath, "game_path", root)
 			}
+		}
+		answer, err := readLine(fmt.Sprintf("The game is not in %s. Download and install it there (about 100 GB)? [y/N] ", path))
+		if err != nil {
+			return "", err
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(answer)), "y") {
+			return path, setConfigValue(cfgPath, "game_path", path)
 		}
 		fmt.Fprintln(os.Stderr, problem)
 	}
-	return errors.New("no valid game folder entered")
+	return "", errors.New("no valid game folder entered")
 }
 
 func setUsername(cfgPath string) error {
@@ -383,12 +391,23 @@ func setup(cfgPath string) error {
 	if err := askOTPSecret(cfgPath, raw["otp_secret"] != "" || raw["otp_secret_encrypted"] != "", false); err != nil {
 		return err
 	}
-	if err := askGamePath(cfgPath, raw["game_path"]); err != nil {
+	installInto, err := askGamePath(cfgPath, raw["game_path"])
+	if err != nil {
 		return err
 	}
-	if _, err := loadConfig(cfgPath); err != nil {
+	cfg, err := loadConfig(cfgPath)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "Saved. `xivlite login` tries the login without starting the game.")
-	return nil
+	if installInto == "" {
+		fmt.Fprintln(os.Stderr, "Saved. `xivlite update` logs in and installs any patches without starting the game.")
+		return nil
+	}
+	fmt.Fprintln(os.Stderr, "Saved. Installing the game now; if it is interrupted, `xivlite install` picks up where it stopped.")
+	g, err := prepareFolder(cfg, installInto, true)
+	if err != nil {
+		return err
+	}
+	_, err = syncGame(cfg, g, false)
+	return err
 }

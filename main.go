@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-var version = "1.0.0"
+var version = "1.1.0"
 
 const (
 	exitOK    = 0
@@ -40,16 +40,19 @@ commands:
                           log in and write the launch plan ("exe PATH" then one "arg VALUE" line
                           per argument) to FILE or stdout. EXE locates the install when the
                           config has no game_path.
+  install [DIR]           download and install the game into DIR (or game_path), then exit
+  update                  log in and install any game patches, without starting the game
   check [--exe EXE]       validate the config and game install without logging in
   setup                   ask for the account, password, authenticator secret and game folder,
                           and write the config (secrets encrypted); Enter keeps a saved value
   set-username, set-password, set-otp-secret
                           change just one of them
   otp                     print the current one-time password
+  self-update [--force]   replace xivlite and xivlite-wrap with the newest release
   version
 
-exit status: 0 launch the game, 3 the game needs patching (the plan starts the official
-launcher when on_patch = boot), 1 error, 2 usage.
+Patches are installed before the game starts (on_patch = install). Exit status: 0 launch the game,
+3 the plan starts the official launcher instead (on_patch = boot), 1 error, 2 usage.
 
 config: $XIVLITE_CONFIG, else $XDG_CONFIG_HOME/xivlite/config, else ~/.config/xivlite/config
 log:    ~/.local/state/xivlite/xivlite.log
@@ -66,6 +69,7 @@ type config struct {
 	encryptArgs    bool
 	checkGate      bool
 	onPatch        string
+	patchDir       string
 	acceptLanguage string
 	extraArgs      []gameArg
 }
@@ -92,7 +96,7 @@ func parseBool(key, v string) (bool, error) {
 }
 
 func loadConfig(path string) (*config, error) {
-	cfg := &config{path: path, lang: langEnglish, encryptArgs: true, checkGate: true, onPatch: "boot", acceptLanguage: "en-US"}
+	cfg := &config{path: path, lang: langEnglish, encryptArgs: true, checkGate: true, onPatch: "install", acceptLanguage: "en-US"}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read config: %v (see config.example)", err)
@@ -132,10 +136,12 @@ func loadConfig(path string) (*config, error) {
 			}
 			*map[string]*bool{"free_trial": &cfg.freeTrial, "encrypt_args": &cfg.encryptArgs, "check_gate": &cfg.checkGate}[key] = b
 		case "on_patch":
-			if value != "boot" && value != "fail" {
-				return nil, fmt.Errorf("%s:%d: on_patch must be boot or fail", path, n)
+			if value != "install" && value != "boot" && value != "fail" {
+				return nil, fmt.Errorf("%s:%d: on_patch must be install, boot or fail", path, n)
 			}
 			cfg.onPatch = value
+		case "patch_dir":
+			cfg.patchDir = expandHome(value)
 		case "accept_language":
 			cfg.acceptLanguage = value
 		case "extra_args":
@@ -297,6 +303,35 @@ func resolveInstall(cfg *config, exeHint string) (install, error) {
 	return g, g.validate()
 }
 
+// prepareFolder readies a game folder for install/update. A new install gets empty boot/ and game/
+// folders (the boot patches fill them) and is recorded as game_path.
+func prepareFolder(cfg *config, root string, create bool) (install, error) {
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return install{}, err
+	}
+	g := install{root: abs}
+	if g.validate() == nil {
+		return g, nil
+	}
+	if !create {
+		return g, g.validate()
+	}
+	for _, d := range []string{"boot", "game"} {
+		if err := os.MkdirAll(filepath.Join(abs, d), 0o755); err != nil {
+			return g, err
+		}
+	}
+	if cfg.gamePath != abs {
+		if err := setConfigValue(cfg.path, "game_path", abs); err != nil {
+			return g, err
+		}
+		cfg.gamePath = abs
+	}
+	logf("installing FINAL FANTASY XIV into %s", abs)
+	return g, nil
+}
+
 func otpCode(cfg *config) (string, error) {
 	if cfg.otpSecret != "" {
 		key, err := otpKey(cfg.otpSecret)
@@ -318,7 +353,7 @@ func otpCode(cfg *config) (string, error) {
 
 func patchPlan(cfg *config, g install, why error) (*plan, error) {
 	if cfg.onPatch != "boot" {
-		return nil, fmt.Errorf("%v; update it with the official launcher (or set on_patch = boot)", why)
+		return nil, fmt.Errorf("%v; run `xivlite update` (or set on_patch = install)", why)
 	}
 	exe := g.bootExe()
 	if _, err := os.Stat(exe); err != nil {
@@ -333,6 +368,21 @@ func prepareLaunch(cfg *config, exeHint string) (*plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	return syncGame(cfg, g, true)
+}
+
+// patchesNeeded installs pending patches (on_patch = install, or always when not launching), or
+// hands over to the official launcher or stops, as on_patch says.
+func patchesNeeded(cfg *config, g install, launch bool, what string, patches []patchEntry) (*plan, error) {
+	if !launch || cfg.onPatch == "install" {
+		return nil, newPatcher(g, cfg.patchDir).run(patches)
+	}
+	return patchPlan(cfg, g, fmt.Errorf("%s needs %d patch(es)", what, len(patches)))
+}
+
+// syncGame checks the login gate, brings boot/ up to date, logs in, registers the session and
+// brings the game up to date. With launch it returns the launch plan.
+func syncGame(cfg *config, g install, launch bool) (*plan, error) {
 	logf("install %s, game version %s", g.root, g.ver("game"))
 	s := newSession(cfg.acceptLanguage, cfg.lang)
 
@@ -346,12 +396,14 @@ func prepareLaunch(cfg *config, exeHint string) (*plan, error) {
 		}
 	}
 
-	needs, err := s.bootNeedsPatch(g)
+	boot, err := s.bootPatches(g)
 	if err != nil {
 		return nil, fmt.Errorf("could not check the boot version: %v", err)
 	}
-	if needs {
-		return patchPlan(cfg, g, errBootPatch)
+	if len(boot) > 0 {
+		if p, err := patchesNeeded(cfg, g, launch, "the boot launcher", boot); p != nil || err != nil {
+			return p, err
+		}
 	}
 
 	otp, err := otpCode(cfg)
@@ -371,12 +423,18 @@ func prepareLaunch(cfg *config, exeHint string) (*plan, error) {
 	}
 	logf("logged in: region %d, expansion level %d", o.region, o.maxExpansion)
 
-	uid, err := s.registerSession(g, o)
-	if errors.Is(err, errGamePatch) || errors.Is(err, errBootPatch) {
-		return patchPlan(cfg, g, err)
-	}
+	uid, patches, err := s.registerSession(g, o)
 	if err != nil {
 		return nil, err
+	}
+	if len(patches) > 0 {
+		if p, err := patchesNeeded(cfg, g, launch, "the game", patches); p != nil || err != nil {
+			return p, err
+		}
+	}
+	if !launch {
+		logf("the game is up to date (version %s)", g.ver("game"))
+		return nil, nil
 	}
 
 	args := []gameArg{
@@ -460,6 +518,15 @@ func run(argv []string) int {
 
 	openLog()
 	switch cmd {
+	case "self-update":
+		if len(rest) > 1 || len(rest) == 1 && rest[0] != "--force" {
+			return badUsage()
+		}
+		if err := selfUpdate(len(rest) == 1); err != nil {
+			logf("%v", err)
+			return exitError
+		}
+		return exitOK
 	case "setup", "set-username", "set-password", "set-otp-secret":
 		if len(rest) != 0 {
 			return badUsage()
@@ -516,6 +583,28 @@ func run(argv []string) int {
 			}
 		}
 		fmt.Printf("config ok: %s\ninstall:   %s (game %s, boot %s)\nexe:       %s\n", cfg.path, g.root, g.ver("game"), g.ver("boot"), g.gameExe())
+		return exitOK
+
+	case "install", "update":
+		root := cfg.gamePath
+		if cmd == "install" && len(rest) == 1 {
+			root = expandHome(rest[0])
+		} else if len(rest) != 0 {
+			return badUsage()
+		}
+		if root == "" {
+			logf("no game folder: give one (xivlite install DIR) or run xivlite setup")
+			return exitError
+		}
+		g, err := prepareFolder(cfg, root, cmd == "install")
+		if err != nil {
+			logf("%v", err)
+			return exitError
+		}
+		if _, err := syncGame(cfg, g, false); err != nil {
+			logf("%v", err)
+			return exitError
+		}
 		return exitOK
 
 	case "login":

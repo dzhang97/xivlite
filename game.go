@@ -46,7 +46,7 @@ func (g install) bootExe() string { return filepath.Join(g.root, "boot", "ffxivb
 func (g install) validate() error {
 	for _, p := range []string{g.gameExe(), filepath.Join(g.root, "boot")} {
 		if _, err := os.Stat(p); err != nil {
-			return fmt.Errorf("%s is not a FINAL FANTASY XIV install (missing %s)", g.root, p)
+			return fmt.Errorf("%s is not a FINAL FANTASY XIV install (missing %s); `xivlite install` downloads the game", g.root, p)
 		}
 	}
 	return nil

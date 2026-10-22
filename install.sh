@@ -21,5 +21,7 @@ cat <<EOF
 Steam / DroidDeck: add game/ffxiv_dx11.exe as a game, then set its launch options to
     "$dest/xivlite-wrap" %command%
 Change the account, password or game folder:  "$dest/xivlite" setup
-Try the login without starting the game:      "$dest/xivlite" login
+Download the game into a folder:              "$dest/xivlite" install DIR
+Install game patches without starting it:     "$dest/xivlite" update
+Update xivlite itself:                        "$dest/xivlite" self-update
 EOF

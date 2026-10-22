@@ -113,7 +113,7 @@ func TestSetupWritesEverythingEncrypted(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "game", "ffxiv_dx11.exe"), []byte("MZ"), 0o644)
 	path := filepath.Join(dir, "conf", "config")
 
-	feed(t, "warrior", "hunter2", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "/nonexistent", filepath.Join(root, "game"))
+	feed(t, "warrior", "hunter2", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "/nonexistent", "n", filepath.Join(root, "game"))
 	if err := setup(path); err != nil {
 		t.Fatal(err)
 	}

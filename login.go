@@ -46,11 +46,9 @@ const (
 )
 
 var (
-	errBootPatch = errors.New("the game's boot files need an update")
-	errGamePatch = errors.New("the game needs an update")
-	storedRe     = regexp.MustCompile(`\t<\s*input .* name="_STORED_" value="(.*)">`)
-	loginOkRe    = regexp.MustCompile(`window.external.user\("login=auth,ok,(.*)\);`)
-	loginErrRe   = regexp.MustCompile(`window.external.user\("login=auth,ng,err,(.*)"\);`)
+	storedRe   = regexp.MustCompile(`\t<\s*input .* name="_STORED_" value="(.*)">`)
+	loginOkRe  = regexp.MustCompile(`window.external.user\("login=auth,ok,(.*)\);`)
+	loginErrRe = regexp.MustCompile(`window.external.user\("login=auth,ng,err,(.*)"\);`)
 )
 
 type language int
@@ -182,8 +180,8 @@ func (s *session) gateOpen() (bool, error) {
 	return v == "1" || v == "true", nil
 }
 
-// bootNeedsPatch asks the boot patch server whether boot/ is current; any patch list means it is not.
-func (s *session) bootNeedsPatch(g install) (bool, error) {
+// bootPatches asks the boot patch server which patches boot/ still needs.
+func (s *session) bootPatches(g install) ([]patchEntry, error) {
 	stamp := []byte(utcStamp())
 	stamp[15] = '0'
 	u := endpoints.bootVer + g.ver("boot") + "/?time=" + string(stamp)
@@ -194,12 +192,12 @@ func (s *session) bootNeedsPatch(g install) (bool, error) {
 	}
 	resp, body, err := s.do(req, [][2]string{{"User-Agent", patcherUserAgent}, {"Host", host}})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	if resp.StatusCode >= 400 {
-		return false, fmt.Errorf("boot version check: HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("boot version check: HTTP %d", resp.StatusCode)
 	}
-	return strings.TrimSpace(body) != "", nil
+	return parsePatchList(body)
 }
 
 type oauthResult struct {
@@ -286,14 +284,15 @@ func (s *session) oauthLogin(username, password, otp string, freeTrial bool) (*o
 	}, nil
 }
 
-// registerSession trades the OAuth session for the game session id (X-Patch-Unique-Id).
-func (s *session) registerSession(g install, o *oauthResult) (string, error) {
+// registerSession trades the OAuth session for the game session id (X-Patch-Unique-Id), and
+// returns the game patches the install still needs.
+func (s *session) registerSession(g install, o *oauthResult) (string, []patchEntry, error) {
 	if err := g.checkVersionSanity(o.maxExpansion); err != nil {
-		return "", err
+		return "", nil, err
 	}
 	report, err := g.versionReport(o.maxExpansion)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	req, _ := http.NewRequest(http.MethodPost, endpoints.gameVer+g.ver("game")+"/"+o.sessionID, strings.NewReader(report))
 	resp, body, err := s.do(req, [][2]string{
@@ -302,20 +301,18 @@ func (s *session) registerSession(g install, o *oauthResult) (string, error) {
 		{"X-Hash-Check", "enabled"},
 	})
 	if err != nil {
-		return "", fmt.Errorf("session registration: %v", err)
+		return "", nil, fmt.Errorf("session registration: %v", err)
 	}
 	switch resp.StatusCode {
 	case http.StatusConflict:
-		return "", fmt.Errorf("%w (the server rejected the boot file hashes; reinstall or repair the game)", errBootPatch)
+		return "", nil, errors.New("the patch server rejected the boot files (modified or damaged); reinstall the game")
 	case http.StatusGone:
-		return "", errors.New("the server no longer serves this game version; update the game")
+		return "", nil, errors.New("the server no longer serves this game version")
 	}
 	uid := resp.Header.Get("X-Patch-Unique-Id")
 	if uid == "" {
-		return "", fmt.Errorf("session registration: no X-Patch-Unique-Id (HTTP %d)", resp.StatusCode)
+		return "", nil, fmt.Errorf("session registration: no X-Patch-Unique-Id (HTTP %d)", resp.StatusCode)
 	}
-	if strings.TrimSpace(body) != "" {
-		return "", errGamePatch
-	}
-	return uid, nil
+	patches, err := parsePatchList(body)
+	return uid, patches, err
 }

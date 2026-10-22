@@ -1,0 +1,17 @@
+dir data
+dir movie
+dir movie/ffxiv
+dir sqpack
+dir sqpack/ex1
+dir sqpack/ex2
+dir sqpack/ffxiv
+file data/big.bin 60000 351e3baf1fceefc168d1e4b2e370d3c50bbe2693859ca84d96e4a17096d6c636
+file ffxiv_dx11.exe 7000 c215b40ff039e732570f95f6d26c6396e0ba0f7e14a427251ca146e29de21482
+file movie/ffxiv/00000.bk2 3000 c8157acfe408ba5b7211aaf08d355cc14d0d6e112556033ef1ace08e6b5f68e6
+file sqpack/ex1/020100.win32.dat0 4000 0e06fda5d6ddd41b82671848159bab73bbd5c57f8627f81623bd37125598361b
+file sqpack/ex1/0c0100.win32.index 1024 027ce23c83f25cbde7b0bffde181f6cf9eef849d6b17721fff34b92e3d5b66b0
+file sqpack/ex1/keep.var 500 a47a35f800babeb345a8bab252809436762b08e33cab67ea182d290af1083ea6
+file sqpack/ex2/0c0200.win32.dat1 512 e7d74b42f486eaf4cdaf6afcebee237c662650124fd110a7482299bc9bc1896a
+file sqpack/ffxiv/0a0000.win32.dat0 3584 8ac475de2fd2eb69c81d7c71120d996072e2e4f4431dbdae8914cd6b5341cb9c
+file sqpack/ffxiv/0a0000.win32.index 1024 83b71889ce415b3638ad28b1df4e4302c6b71d990c7302b08d63c77de7551d5b
+file sqpack/ffxiv/0a0000.win32.index1 2048 c1f1053b19ca287c2087d26f4179ee17a1079c4f009f77e3572df3e05561a3cb

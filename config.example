@@ -23,9 +23,12 @@ language = english
 # Pass the arguments encrypted, as the official launcher does (recommended).
 # encrypt_args = yes
 
-# When the game needs an update: "boot" starts the official launcher (ffxivboot64.exe) through the
-# same command so it can patch; "fail" stops with an error.
-# on_patch = boot
+# When the game needs patches at launch: "install" downloads and installs them first; "boot" starts
+# the official launcher (ffxivboot64.exe) instead; "fail" stops with an error.
+# on_patch = install
+
+# Where patches wait between download and install (default: .xivlite-patches in the game folder).
+# patch_dir =
 
 # Abort early when the login gate reports maintenance.
 # check_gate = yes
