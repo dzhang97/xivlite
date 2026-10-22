@@ -37,8 +37,9 @@ would start it. Only the login helper is x86_64: on an ARM device the script run
 2. From the DroidDeck desktop's terminal, copy `dist/` somewhere and run `./install.sh`. It installs
    to `~/.local/share/xivlite` (programs cannot be run from Android shared storage, which is noexec)
    and creates `~/.config/xivlite/config`.
-3. Edit the config: `username`, `password`, and `otp_secret` if the account has the Software
-   Authenticator. Check it with `~/.local/share/xivlite/xivlite check --exe "<install>/game/ffxiv_dx11.exe"`.
+3. Set `username` in the config, then run `xivlite set-password` (and `xivlite set-otp-secret` if
+   the account has the Software Authenticator); both ask in the terminal and store the value
+   encrypted. Check it with `~/.local/share/xivlite/xivlite check --exe "<install>/game/ffxiv_dx11.exe"`.
 4. In DroidDeck's Games tab, press **+** and add `game/ffxiv_dx11.exe`. In its editor (✎), set
    **Launch options** to:
 
@@ -72,8 +73,11 @@ xivlite-wrap %command%                     # Steam launch options for a non-Stea
 
 | Key | Default | |
 | --- | --- | --- |
-| `username`, `password` / `password_file` | required | Square Enix ID and password |
-| `otp_secret` | none | base32 secret or `otpauth://` URI; otherwise `XIVLITE_OTP` or a terminal prompt |
+| `username` | required | Square Enix ID |
+| `password_encrypted` | | written by `xivlite set-password` |
+| `password_command` | | e.g. `secret-tool lookup ...`; first line of output |
+| `password`, `password_file` | | plain text, accepted with a warning |
+| `otp_secret_encrypted` | none | written by `xivlite set-otp-secret`; else `otp_secret` (plain), `XIVLITE_OTP` or a prompt |
 | `game_path` | from the command | folder holding `boot/` and `game/` |
 | `language` | english | japanese, english, german, french |
 | `encrypt_args` | yes | pass arguments encrypted like the official launcher |
@@ -82,12 +86,27 @@ xivlite-wrap %command%                     # Steam launch options for a non-Stea
 | `free_trial` | no | free trial accounts |
 | `extra_args` | none | extra `key=value` game arguments (no spaces) |
 
-Keep the file private (`chmod 600`); xivlite warns when it is not. Passwords, codes and session ids
-never reach the log (`~/.local/state/xivlite/xivlite.log`).
+Exactly one password setting may be present.
+
+### How the password is protected
+
+`set-password` and `set-otp-secret` encrypt with AES-256-GCM under a random key in
+`~/.local/share/xivlite/secret.key` (mode 600), kept apart from the config. The config can then be
+shared, synced or pasted into a bug report without giving the password away, and deleting the key
+makes the saved values useless.
+
+It is not a lock against software running as your user: anything that can read both files can
+decrypt them, as xivlite itself does to log in unattended. DroidDeck's Linux session has no secure
+key store that could do better (Android's Keystore is not reachable from it). On a desktop with a
+keyring, `password_command` with `secret-tool` keeps the password there instead.
+
+xivlite warns when the config is readable by others. Passwords, codes and session ids never reach
+the log (`~/.local/state/xivlite/xivlite.log`).
 
 ## Commands and exit status
 
-`xivlite login [--exe EXE] [--out FILE]`, `exec [--] CMD...`, `check [--exe EXE]`, `otp`, `version`.
+`xivlite login [--exe EXE] [--out FILE]`, `exec [--] CMD...`, `check [--exe EXE]`, `set-password`,
+`set-otp-secret`, `otp`, `version`.
 Exit status 0 means start the game, 3 means patch (the plan names the official launcher), 1 an
 error, 2 usage. A failed login shows a desktop notification when one can be shown, and its reason
 is the log's last line.
@@ -96,7 +115,7 @@ is the log's last line.
 
 ```
 ./build.sh                                   # Go 1.22+, stdlib only → dist/
-go test ./...                                # Blowfish, argument encryption vs XIVLauncher, TOTP
+go test ./...                                # Blowfish, argument encryption vs XIVLauncher, TOTP, secrets
 go test -tags xivlite_mock ./...             # full login flow against a stand-in Square Enix server
 ```
 

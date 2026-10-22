@@ -1,15 +1,16 @@
 # xivlite configuration. Copy to ~/.config/xivlite/config and run: chmod 600 ~/.config/xivlite/config
 # One "key = value" per line. Values may be quoted; "#" starts a comment only at the start of a line.
 
-# Square Enix ID (not an email address) and password. Steam service accounts are not supported.
+# Square Enix ID (not an email address). Steam service accounts are not supported.
 username = YourSquareEnixID
-password = your password here
-# ...or keep the password in its own file (first line is used):
-# password_file = ~/.config/xivlite/password
 
-# Optional: the Square Enix Software Authenticator secret (base32, or the otpauth:// URI), so the
-# one-time password is generated here. Without it, XIVLITE_OTP=123456 or a terminal prompt is used.
-# otp_secret = JBSWY3DPEHPK3PXP
+# The password: run `xivlite set-password`, which adds password_encrypted here. Or, where a keyring
+# is available, fetch it with a command (its first line of output is used):
+# password_command = secret-tool lookup service xivlite user YourSquareEnixID
+# (password = ... and password_file = ... also work, in plain text, with a warning.)
+
+# Optional: the Square Enix Software Authenticator secret, so one-time passwords are generated here.
+# Run `xivlite set-otp-secret` to add it encrypted. Without it, XIVLITE_OTP=123456 or a prompt is used.
 
 # The folder that holds boot/ and game/. Optional when launched through a command (Steam's
 # %command%) that already names game/ffxiv_dx11.exe or boot/ffxivboot.exe.

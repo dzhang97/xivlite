@@ -13,7 +13,7 @@ install -m 755 "$src/xivlite" "$src/xivlite-wrap" "$dest/"
 if [ ! -f "$conf" ]; then
   mkdir -p "$(dirname "$conf")"
   install -m 600 "$src/config.example" "$conf"
-  echo "Created $conf - set username, password and game_path in it."
+  echo "Created $conf - set username (and game_path if needed) in it."
 fi
 
 cat <<EOF
@@ -21,5 +21,6 @@ Installed to $dest
 
 Steam / DroidDeck: add game/ffxiv_dx11.exe as a game, then set its launch options to
     "$dest/xivlite-wrap" %command%
-Check the setup:   "$dest/xivlite" check
+Save the password:  "$dest/xivlite" set-password      (and set-otp-secret, with the authenticator)
+Check the setup:    "$dest/xivlite" check
 EOF

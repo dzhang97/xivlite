@@ -41,7 +41,9 @@ commands:
                           per argument) to FILE or stdout. EXE locates the install when the
                           config has no game_path.
   check [--exe EXE]       validate the config and game install without logging in
-  otp                     print the current one-time password from otp_secret
+  set-password            ask for the password and save it encrypted in the config
+  set-otp-secret          ask for the authenticator secret and save it encrypted
+  otp                     print the current one-time password
   version
 
 exit status: 0 launch the game, 3 the game needs patching (the plan starts the official
@@ -94,7 +96,7 @@ func loadConfig(path string) (*config, error) {
 		return nil, fmt.Errorf("cannot read config: %v (see config.example)", err)
 	}
 	defer f.Close()
-	passwordFile := ""
+	sources := map[string]string{}
 	sc := bufio.NewScanner(f)
 	for n := 1; sc.Scan(); n++ {
 		line := strings.TrimSpace(sc.Text())
@@ -112,12 +114,8 @@ func loadConfig(path string) (*config, error) {
 		switch key {
 		case "username":
 			cfg.username = value
-		case "password":
-			cfg.password = value
-		case "password_file":
-			passwordFile = expandHome(value)
-		case "otp_secret":
-			cfg.otpSecret = value
+		case "password", "password_file", "password_encrypted", "password_command", "otp_secret", "otp_secret_encrypted":
+			sources[key] = value
 		case "game_path":
 			cfg.gamePath = expandHome(value)
 		case "language":
@@ -155,23 +153,71 @@ func loadConfig(path string) (*config, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if passwordFile != "" && cfg.password == "" {
-		b, err := os.ReadFile(passwordFile)
-		if err != nil {
-			return nil, fmt.Errorf("password_file: %v", err)
-		}
-		cfg.password = strings.TrimRight(string(b), "\r\n")
-	}
 	if cfg.username == "" {
 		return nil, fmt.Errorf("%s: username is not set", path)
 	}
-	if cfg.password == "" {
-		return nil, fmt.Errorf("%s: set password or password_file", path)
+	if err := cfg.resolveSecrets(sources); err != nil {
+		return nil, fmt.Errorf("%s: %v", path, err)
 	}
 	if st, err := os.Stat(path); err == nil && st.Mode().Perm()&0o077 != 0 {
 		logf("warning: %s is readable by other users; run: chmod 600 %s", path, path)
 	}
 	return cfg, nil
+}
+
+// resolveSecrets takes the password from exactly one of its four settings, and the OTP secret
+// from otp_secret or otp_secret_encrypted.
+func (cfg *config) resolveSecrets(sources map[string]string) error {
+	var given []string
+	for _, k := range []string{"password", "password_file", "password_encrypted", "password_command"} {
+		if sources[k] != "" {
+			given = append(given, k)
+		}
+	}
+	if len(given) == 0 {
+		return errors.New("no password: run `xivlite set-password`, or set password_command")
+	}
+	if len(given) > 1 {
+		return fmt.Errorf("set only one of %s", strings.Join(given, ", "))
+	}
+	if sources["otp_secret"] != "" && sources["otp_secret_encrypted"] != "" {
+		return errors.New("set only one of otp_secret, otp_secret_encrypted")
+	}
+	var key []byte
+	needKey := sources["password_encrypted"] != "" || sources["otp_secret_encrypted"] != ""
+	if needKey {
+		var err error
+		if key, err = loadKey(false); err != nil {
+			return err
+		}
+	}
+	var err error
+	switch given[0] {
+	case "password":
+		cfg.password = sources["password"]
+		logf("warning: the password is stored in plain text; run `xivlite set-password` to encrypt it")
+	case "password_file":
+		var b []byte
+		if b, err = os.ReadFile(expandHome(sources["password_file"])); err == nil {
+			cfg.password = strings.TrimRight(string(b), "\r\n")
+		}
+		logf("warning: password_file holds the password in plain text; run `xivlite set-password` to encrypt it")
+	case "password_encrypted":
+		cfg.password, err = unseal(key, "password_encrypted", sources["password_encrypted"])
+	case "password_command":
+		cfg.password, err = commandSecret(sources["password_command"])
+	}
+	if err != nil {
+		return err
+	}
+	if cfg.password == "" {
+		return fmt.Errorf("%s is empty", given[0])
+	}
+	cfg.otpSecret = sources["otp_secret"]
+	if s := sources["otp_secret_encrypted"]; s != "" {
+		cfg.otpSecret, err = unseal(key, "otp_secret_encrypted", s)
+	}
+	return err
 }
 
 func expandHome(p string) string {
@@ -396,16 +442,31 @@ func run(argv []string) int {
 	}
 
 	openLog()
+	switch cmd {
+	case "set-password", "set-otp-secret":
+		if len(rest) != 0 {
+			return badUsage()
+		}
+		set := setPassword
+		if cmd == "set-otp-secret" {
+			set = setOTPSecret
+		}
+		if err := set(cfgPath); err != nil {
+			logf("%v", err)
+			return exitError
+		}
+		return exitOK
+	}
 	cfg, err := loadConfig(cfgPath)
-	if err != nil && cmd != "otp" {
+	if err != nil {
 		logf("%v", err)
 		return exitError
 	}
 
 	switch cmd {
 	case "otp":
-		if cfg == nil || cfg.otpSecret == "" {
-			logf("otp_secret is not set in %s", cfgPath)
+		if cfg.otpSecret == "" {
+			logf("no authenticator secret in %s; run: xivlite set-otp-secret", cfgPath)
 			return exitError
 		}
 		key, err := otpKey(cfg.otpSecret)
