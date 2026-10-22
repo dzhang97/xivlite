@@ -1,0 +1,36 @@
+# xivlite configuration. Copy to ~/.config/xivlite/config and run: chmod 600 ~/.config/xivlite/config
+# One "key = value" per line. Values may be quoted; "#" starts a comment only at the start of a line.
+
+# Square Enix ID (not an email address) and password. Steam service accounts are not supported.
+username = YourSquareEnixID
+password = your password here
+# ...or keep the password in its own file (first line is used):
+# password_file = ~/.config/xivlite/password
+
+# Optional: the Square Enix Software Authenticator secret (base32, or the otpauth:// URI), so the
+# one-time password is generated here. Without it, XIVLITE_OTP=123456 or a terminal prompt is used.
+# otp_secret = JBSWY3DPEHPK3PXP
+
+# The folder that holds boot/ and game/. Optional when launched through a command (Steam's
+# %command%) that already names game/ffxiv_dx11.exe or boot/ffxivboot.exe.
+# game_path = /root/Storage/SquareEnix/FINAL FANTASY XIV - A Realm Reborn
+
+# japanese, english, german or french
+language = english
+
+# free_trial = no
+
+# Pass the arguments encrypted, as the official launcher does (recommended).
+# encrypt_args = yes
+
+# When the game needs an update: "boot" starts the official launcher (ffxivboot64.exe) through the
+# same command so it can patch; "fail" stops with an error.
+# on_patch = boot
+
+# Abort early when the login gate reports maintenance.
+# check_gate = yes
+
+# Extra game arguments, key=value words without spaces, e.g. SYS.ScreenMode=2
+# extra_args =
+
+# accept_language = en-US

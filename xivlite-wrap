@@ -1,0 +1,96 @@
+#!/bin/bash
+# xivlite-wrap - starts FINAL FANTASY XIV through whatever already runs Windows programs, after
+# xivlite (x86_64) has logged in. On an ARM device the helper runs under DroidDeck's FEX while this
+# script, and the Proton it hands the game to, stay native.
+#
+#   Steam / DroidDeck launch options:  /path/to/xivlite-wrap %command%
+#   Standalone:                        /path/to/xivlite-wrap        (droiddeck-proton-run, else $WINE or wine)
+#
+# The game exe in the command (ffxiv_dx11.exe, or the boot launcher) is replaced by the plan's exe
+# and arguments; with no game exe in it, they are appended.
+set -u
+
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+bin=${XIVLITE_BIN:-$here/xivlite}
+state=${XDG_STATE_HOME:-$HOME/.local/state}/xivlite
+mkdir -p "$state" && chmod 700 "$state"
+plan=$(mktemp "$state/plan.XXXXXX") || exit 1
+trap 'rm -f "$plan"' EXIT
+
+say() { echo "xivlite-wrap: $*" >&2; }
+
+notify() {
+  [ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v notify-send >/dev/null 2>&1 || return 0
+  notify-send -a xivlite -i dialog-error "FINAL FANTASY XIV login failed" "$1" >/dev/null 2>&1 || true
+}
+
+is_game_exe() {
+  local name=${1##*/}
+  case ${name,,} in
+    ffxiv_dx11.exe|ffxivboot.exe|ffxivboot64.exe|ffxivlauncher64.exe|ffxivlauncher.exe) return 0 ;;
+  esac
+  return 1
+}
+
+if [ $# -eq 0 ]; then
+  if [ -x /usr/local/bin/droiddeck-proton-run ]; then
+    set -- /usr/local/bin/droiddeck-proton-run
+  else
+    set -- "${WINE:-wine}"
+  fi
+fi
+
+hint=()
+for word in "$@"; do
+  if is_game_exe "$word"; then hint=(--exe "$word"); break; fi
+done
+
+helper() {
+  if [ "$(uname -m)" = x86_64 ]; then
+    "$bin" "$@"
+  elif [ -x /usr/local/bin/droiddeck-fex ]; then
+    /usr/local/bin/droiddeck-fex run --mode on -- "$bin" "$@"
+  else
+    "$bin" "$@"
+  fi
+}
+
+helper login "${hint[@]}" --out "$plan"
+rc=$?
+case $rc in
+  0) ;;
+  3) say "the game needs patching; starting the official launcher" ;;
+  126) say "FEX is not ready; DroidDeck asked Steam to install FEX and its x86 runtime - try again when that finishes"
+       notify "FEX is still being installed by Steam; try again when the download finishes."
+       exit "$rc" ;;
+  *) last=$(tail -n 1 "$state/xivlite.log" 2>/dev/null | cut -c21-)
+     notify "${last:-xivlite exited with status $rc}"
+     exit "$rc" ;;
+esac
+
+exe=
+args=()
+while IFS= read -r line; do
+  case $line in
+    "exe "*) exe=${line#exe } ;;
+    "arg "*) args+=("${line#arg }") ;;
+  esac
+done < "$plan"
+[ -n "$exe" ] || { say "xivlite wrote no launch plan"; exit 1; }
+
+cmd=()
+spliced=0
+for word in "$@"; do
+  if [ "$spliced" = 0 ] && is_game_exe "$word"; then
+    cmd+=("$exe" "${args[@]}")
+    spliced=1
+  else
+    cmd+=("$word")
+  fi
+done
+[ "$spliced" = 1 ] || cmd+=("$exe" "${args[@]}")
+
+cd "$(dirname "$exe")" 2>/dev/null || true
+rm -f "$plan"
+trap - EXIT
+exec "${cmd[@]}"
