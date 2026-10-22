@@ -36,10 +36,11 @@ would start it. Only the login helper is x86_64: on an ARM device the script run
    (`/root/Storage/...` inside the session).
 2. From the DroidDeck desktop's terminal, copy `dist/` somewhere and run `./install.sh`. It installs
    to `~/.local/share/xivlite` (programs cannot be run from Android shared storage, which is noexec)
-   and creates `~/.config/xivlite/config`.
-3. Set `username` in the config, then run `xivlite set-password` (and `xivlite set-otp-secret` if
-   the account has the Software Authenticator); both ask in the terminal and store the value
-   encrypted. Check it with `~/.local/share/xivlite/xivlite check --exe "<install>/game/ffxiv_dx11.exe"`.
+   and starts `xivlite setup`.
+3. Setup asks for your Square Enix ID, password, authenticator secret (if the account uses the
+   Software Authenticator) and, optionally, the game folder, and writes the config with the account
+   details encrypted. No file needs editing; run `xivlite setup` again to change anything (Enter
+   keeps a saved value). `xivlite login` tries the login without starting the game.
 4. In DroidDeck's Games tab, press **+** and add `game/ffxiv_dx11.exe`. In its editor (✎), set
    **Launch options** to:
 
@@ -69,15 +70,16 @@ xivlite-wrap %command%                     # Steam launch options for a non-Stea
 
 ## Configuration
 
-`~/.config/xivlite/config` (or `$XIVLITE_CONFIG`, or `-c FILE`); see `config.example`.
+`xivlite setup` writes `~/.config/xivlite/config` (or `$XIVLITE_CONFIG`, or `-c FILE`); the other
+settings are optional and listed in `config.example`.
 
 | Key | Default | |
 | --- | --- | --- |
-| `username` | required | Square Enix ID |
-| `password_encrypted` | | written by `xivlite set-password` |
+| `username_encrypted` | | written by setup; or `username` in plain text |
+| `password_encrypted` | | written by setup |
 | `password_command` | | e.g. `secret-tool lookup ...`; first line of output |
 | `password`, `password_file` | | plain text, accepted with a warning |
-| `otp_secret_encrypted` | none | written by `xivlite set-otp-secret`; else `otp_secret` (plain), `XIVLITE_OTP` or a prompt |
+| `otp_secret_encrypted` | none | written by setup; else `otp_secret` (plain), `XIVLITE_OTP` or a prompt |
 | `game_path` | from the command | folder holding `boot/` and `game/` |
 | `language` | english | japanese, english, german, french |
 | `encrypt_args` | yes | pass arguments encrypted like the official launcher |
@@ -90,10 +92,10 @@ Exactly one password setting may be present.
 
 ### How the password is protected
 
-`set-password` and `set-otp-secret` encrypt with AES-256-GCM under a random key in
+Setup encrypts the ID, password and authenticator secret with AES-256-GCM under a random key in
 `~/.local/share/xivlite/secret.key` (mode 600), kept apart from the config. The config can then be
-shared, synced or pasted into a bug report without giving the password away, and deleting the key
-makes the saved values useless.
+shared, synced or pasted into a bug report without giving the account away, and deleting the key
+makes the saved values useless. The log shows the ID masked (`wa*****`).
 
 It is not a lock against software running as your user: anything that can read both files can
 decrypt them, as xivlite itself does to log in unattended. DroidDeck's Linux session has no secure
@@ -105,8 +107,8 @@ the log (`~/.local/state/xivlite/xivlite.log`).
 
 ## Commands and exit status
 
-`xivlite login [--exe EXE] [--out FILE]`, `exec [--] CMD...`, `check [--exe EXE]`, `set-password`,
-`set-otp-secret`, `otp`, `version`.
+`xivlite setup`, `login [--exe EXE] [--out FILE]`, `exec [--] CMD...`, `check [--exe EXE]`, `otp`,
+`version`, and `set-username`, `set-password`, `set-otp-secret` to change one value.
 Exit status 0 means start the game, 3 means patch (the plan names the official launcher), 1 an
 error, 2 usage. A failed login shows a desktop notification when one can be shown, and its reason
 is the log's last line.

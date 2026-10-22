@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"os"
 	"path/filepath"
 	"strings"
@@ -78,7 +79,7 @@ func TestConfigSecretSources(t *testing.T) {
 	}
 
 	write("")
-	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "set-password") {
+	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "xivlite setup") {
 		t.Errorf("no source: %v", err)
 	}
 
@@ -86,5 +87,70 @@ func TestConfigSecretSources(t *testing.T) {
 	write("password_encrypted = " + pw + "\n")
 	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "set-password") {
 		t.Errorf("missing key: %v", err)
+	}
+}
+
+// feed makes the next prompts read these lines, as when input is piped in.
+func feed(t *testing.T, lines ...string) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteString(strings.Join(lines, "\n") + "\n")
+	w.Close()
+	saved := os.Stdin
+	os.Stdin, stdin = r, bufio.NewReader(r)
+	t.Cleanup(func() { os.Stdin, stdin = saved, bufio.NewReader(saved) })
+}
+
+func TestSetupWritesEverythingEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XIVLITE_KEY", filepath.Join(dir, "secret.key"))
+	root := filepath.Join(dir, "FINAL FANTASY XIV")
+	os.MkdirAll(filepath.Join(root, "boot"), 0o755)
+	os.MkdirAll(filepath.Join(root, "game"), 0o755)
+	os.WriteFile(filepath.Join(root, "game", "ffxiv_dx11.exe"), []byte("MZ"), 0o644)
+	path := filepath.Join(dir, "conf", "config")
+
+	feed(t, "warrior", "hunter2", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", "/nonexistent", filepath.Join(root, "game"))
+	if err := setup(path); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	if text := string(b); strings.Contains(text, "warrior") || strings.Contains(text, "hunter2") || strings.Contains(text, "GEZD") {
+		t.Errorf("plain text in config:\n%s", text)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil || cfg.username != "warrior" || cfg.password != "hunter2" || cfg.otpSecret == "" || cfg.gamePath != root {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+
+	// Enter everywhere keeps what is saved; a new ID replaces only the ID.
+	feed(t, "", "", "", "")
+	if err := setup(path); err != nil {
+		t.Fatal(err)
+	}
+	feed(t, "lancer", "", "", "")
+	if err := setup(path); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = loadConfig(path)
+	if err != nil || cfg.username != "lancer" || cfg.password != "hunter2" || cfg.otpSecret == "" || cfg.gamePath != root {
+		t.Fatalf("after re-run: %+v %v", cfg, err)
+	}
+	if b, _ := os.ReadFile(path); strings.Count(string(b), "_encrypted") != 3 {
+		t.Errorf("duplicate settings:\n%s", b)
+	}
+
+	feed(t, "")
+	if err := setup(filepath.Join(dir, "other")); err == nil {
+		t.Error("setup without an ID succeeded")
+	}
+}
+
+func TestMaskName(t *testing.T) {
+	if maskName("warrior") != "wa*****" || maskName("ab") != "***" {
+		t.Error(maskName("warrior"))
 	}
 }

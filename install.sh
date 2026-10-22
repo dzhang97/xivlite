@@ -1,6 +1,6 @@
 #!/bin/bash
 # Installs xivlite and xivlite-wrap to a folder programs may run from (default ~/.local/share/xivlite)
-# and creates ~/.config/xivlite/config from config.example when there is none.
+# and, when there is no config yet, runs `xivlite setup` to ask for the account and write one.
 # On DroidDeck, run it from the desktop's terminal; Android shared storage is mounted noexec.
 set -eu
 src=$(cd "$(dirname "$0")" && pwd)
@@ -10,17 +10,16 @@ conf=${XDG_CONFIG_HOME:-$HOME/.config}/xivlite/config
 [ -f "$src/xivlite" ] || { echo "install.sh: $src/xivlite is missing; run build.sh first" >&2; exit 1; }
 mkdir -p "$dest"
 install -m 755 "$src/xivlite" "$src/xivlite-wrap" "$dest/"
-if [ ! -f "$conf" ]; then
-  mkdir -p "$(dirname "$conf")"
-  install -m 600 "$src/config.example" "$conf"
-  echo "Created $conf - set username (and game_path if needed) in it."
+echo "Installed to $dest"
+if [ ! -f "$conf" ] && [ -t 0 ]; then
+  echo
+  "$dest/xivlite" setup || echo "Setup did not finish; run it again with: \"$dest/xivlite\" setup"
 fi
 
 cat <<EOF
-Installed to $dest
 
 Steam / DroidDeck: add game/ffxiv_dx11.exe as a game, then set its launch options to
     "$dest/xivlite-wrap" %command%
-Save the password:  "$dest/xivlite" set-password      (and set-otp-secret, with the authenticator)
-Check the setup:    "$dest/xivlite" check
+Change the account, password or game folder:  "$dest/xivlite" setup
+Try the login without starting the game:      "$dest/xivlite" login
 EOF

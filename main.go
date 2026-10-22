@@ -41,8 +41,10 @@ commands:
                           per argument) to FILE or stdout. EXE locates the install when the
                           config has no game_path.
   check [--exe EXE]       validate the config and game install without logging in
-  set-password            ask for the password and save it encrypted in the config
-  set-otp-secret          ask for the authenticator secret and save it encrypted
+  setup                   ask for the account, password, authenticator secret and game folder,
+                          and write the config (secrets encrypted); Enter keeps a saved value
+  set-username, set-password, set-otp-secret
+                          change just one of them
   otp                     print the current one-time password
   version
 
@@ -112,9 +114,7 @@ func loadConfig(path string) (*config, error) {
 			value = value[1 : len(value)-1]
 		}
 		switch key {
-		case "username":
-			cfg.username = value
-		case "password", "password_file", "password_encrypted", "password_command", "otp_secret", "otp_secret_encrypted":
+		case "username", "username_encrypted", "password", "password_file", "password_encrypted", "password_command", "otp_secret", "otp_secret_encrypted":
 			sources[key] = value
 		case "game_path":
 			cfg.gamePath = expandHome(value)
@@ -153,9 +153,6 @@ func loadConfig(path string) (*config, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	if cfg.username == "" {
-		return nil, fmt.Errorf("%s: username is not set", path)
-	}
 	if err := cfg.resolveSecrets(sources); err != nil {
 		return nil, fmt.Errorf("%s: %v", path, err)
 	}
@@ -165,9 +162,15 @@ func loadConfig(path string) (*config, error) {
 	return cfg, nil
 }
 
-// resolveSecrets takes the password from exactly one of its four settings, and the OTP secret
-// from otp_secret or otp_secret_encrypted.
+// resolveSecrets takes the username from username or username_encrypted, the password from exactly
+// one of its four settings, and the OTP secret from otp_secret or otp_secret_encrypted.
 func (cfg *config) resolveSecrets(sources map[string]string) error {
+	if sources["username"] != "" && sources["username_encrypted"] != "" {
+		return errors.New("set only one of username, username_encrypted")
+	}
+	if sources["username"] == "" && sources["username_encrypted"] == "" {
+		return errors.New("no username: run `xivlite setup`")
+	}
 	var given []string
 	for _, k := range []string{"password", "password_file", "password_encrypted", "password_command"} {
 		if sources[k] != "" {
@@ -175,7 +178,7 @@ func (cfg *config) resolveSecrets(sources map[string]string) error {
 		}
 	}
 	if len(given) == 0 {
-		return errors.New("no password: run `xivlite set-password`, or set password_command")
+		return errors.New("no password: run `xivlite setup`, or set password_command")
 	}
 	if len(given) > 1 {
 		return fmt.Errorf("set only one of %s", strings.Join(given, ", "))
@@ -184,7 +187,7 @@ func (cfg *config) resolveSecrets(sources map[string]string) error {
 		return errors.New("set only one of otp_secret, otp_secret_encrypted")
 	}
 	var key []byte
-	needKey := sources["password_encrypted"] != "" || sources["otp_secret_encrypted"] != ""
+	needKey := sources["username_encrypted"] != "" || sources["password_encrypted"] != "" || sources["otp_secret_encrypted"] != ""
 	if needKey {
 		var err error
 		if key, err = loadKey(false); err != nil {
@@ -192,6 +195,12 @@ func (cfg *config) resolveSecrets(sources map[string]string) error {
 		}
 	}
 	var err error
+	cfg.username = sources["username"]
+	if s := sources["username_encrypted"]; s != "" {
+		if cfg.username, err = unseal(key, "username_encrypted", s); err != nil {
+			return err
+		}
+	}
 	switch given[0] {
 	case "password":
 		cfg.password = sources["password"]
@@ -218,6 +227,14 @@ func (cfg *config) resolveSecrets(sources map[string]string) error {
 		cfg.otpSecret, err = unseal(key, "otp_secret_encrypted", s)
 	}
 	return err
+}
+
+// maskName keeps the log useful without writing the account name into it.
+func maskName(name string) string {
+	if len(name) <= 2 {
+		return "***"
+	}
+	return name[:2] + strings.Repeat("*", len(name)-2)
 }
 
 func expandHome(p string) string {
@@ -291,9 +308,9 @@ func otpCode(cfg *config) (string, error) {
 	if code := os.Getenv("XIVLITE_OTP"); code != "" {
 		return strings.TrimSpace(code), nil
 	}
-	if st, err := os.Stdin.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
+	if onTerminal() {
 		fmt.Fprint(os.Stderr, "One-time password (Enter if none): ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		line, _ := stdin.ReadString('\n')
 		return strings.TrimSpace(line), nil
 	}
 	return "", nil
@@ -341,7 +358,7 @@ func prepareLaunch(cfg *config, exeHint string) (*plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	logf("logging in as %s%s", cfg.username, map[bool]string{true: " with a one-time password", false: ""}[otp != ""])
+	logf("logging in as %s%s", maskName(cfg.username), map[bool]string{true: " with a one-time password", false: ""}[otp != ""])
 	o, err := s.oauthLogin(cfg.username, cfg.password, otp, cfg.freeTrial)
 	if err != nil {
 		return nil, err
@@ -443,14 +460,12 @@ func run(argv []string) int {
 
 	openLog()
 	switch cmd {
-	case "set-password", "set-otp-secret":
+	case "setup", "set-username", "set-password", "set-otp-secret":
 		if len(rest) != 0 {
 			return badUsage()
 		}
-		set := setPassword
-		if cmd == "set-otp-secret" {
-			set = setOTPSecret
-		}
+		set := map[string]func(string) error{"setup": setup, "set-username": setUsername,
+			"set-password": setPassword, "set-otp-secret": setOTPSecret}[cmd]
 		if err := set(cfgPath); err != nil {
 			logf("%v", err)
 			return exitError

@@ -145,11 +145,28 @@ func readSecret(prompt string) (string, error) {
 			fmt.Fprintln(os.Stderr)
 		}()
 	}
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	return readLine("")
+}
+
+// stdin is shared so successive prompts fed from a pipe each get their own line.
+var stdin = bufio.NewReader(os.Stdin)
+
+func readLine(prompt string) (string, error) {
+	if prompt != "" {
+		fmt.Fprint(os.Stderr, prompt)
+	}
+	line, err := stdin.ReadString('\n')
 	if err != nil && line == "" {
 		return "", errors.New("no input")
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// onTerminal is true only for a real terminal (/dev/null is a character device too).
+func onTerminal() bool {
+	var t syscall.Termios
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), syscall.TCGETS, uintptr(unsafe.Pointer(&t)))
+	return errno == 0
 }
 
 // setConfigValue writes key = value in place of the first of replaced keys, drops the others, and
@@ -193,53 +210,185 @@ func setConfigValue(path, key, value string, replaced ...string) error {
 	return os.Rename(tmp, path)
 }
 
-func setPassword(cfgPath string) error {
-	pw, err := readSecret("Square Enix password: ")
-	if err != nil || pw == "" {
-		return errors.New("no password entered")
-	}
-	if st, err := os.Stdin.Stat(); err == nil && st.Mode()&os.ModeCharDevice != 0 {
-		again, _ := readSecret("Again, to confirm: ")
-		if again != pw {
-			return errors.New("the passwords did not match; nothing was changed")
+// rawConfig returns the config's settings (last one wins) without validating them.
+func rawConfig(path string) map[string]string {
+	values := map[string]string{}
+	b, _ := os.ReadFile(path)
+	for _, line := range strings.Split(string(b), "\n") {
+		line = strings.TrimSpace(line)
+		k, v, found := strings.Cut(line, "=")
+		if found && !strings.HasPrefix(line, "#") {
+			values[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
 		}
 	}
+	return values
+}
+
+func saveSealed(cfgPath, name, value string, replaced ...string) error {
 	key, err := loadKey(true)
 	if err != nil {
 		return err
 	}
-	sealed, err := seal(key, "password_encrypted", pw)
+	sealed, err := seal(key, name, value)
 	if err != nil {
 		return err
 	}
-	if err := setConfigValue(cfgPath, "password_encrypted", sealed, "password", "password_file", "password_command"); err != nil {
-		return err
-	}
-	fmt.Fprintf(os.Stderr, "Saved the password encrypted in %s (key: %s).\n", cfgPath, keyPath())
-	return nil
+	return setConfigValue(cfgPath, name, sealed, replaced...)
 }
 
-func setOTPSecret(cfgPath string) error {
-	secret, err := readSecret("Authenticator secret (base32 or otpauth:// URI): ")
-	if err != nil || secret == "" {
-		return errors.New("no secret entered")
+// savedUsername is the username already in the config, decrypted when needed ("" if none or unreadable).
+func savedUsername(raw map[string]string) string {
+	if raw["username_encrypted"] == "" {
+		return raw["username"]
+	}
+	key, err := loadKey(false)
+	if err != nil {
+		return ""
+	}
+	name, _ := unseal(key, "username_encrypted", raw["username_encrypted"])
+	return name
+}
+
+func askUsername(cfgPath, current string) error {
+	prompt := "Square Enix ID (not the email address): "
+	if current != "" {
+		prompt = fmt.Sprintf("Square Enix ID [%s]: ", current)
+	}
+	name, err := readLine(prompt)
+	if err != nil {
+		return err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		if current != "" {
+			return nil
+		}
+		return errors.New("no Square Enix ID entered")
+	}
+	return saveSealed(cfgPath, "username_encrypted", name, "username")
+}
+
+func askPassword(cfgPath string, saved bool) error {
+	prompt := "Square Enix password: "
+	if saved {
+		prompt = "Square Enix password (Enter keeps the saved one): "
+	}
+	pw, err := readSecret(prompt)
+	if err != nil {
+		return err
+	}
+	if pw == "" {
+		if saved {
+			return nil
+		}
+		return errors.New("no password entered")
+	}
+	if onTerminal() {
+		if again, _ := readSecret("Again, to confirm: "); again != pw {
+			return errors.New("the passwords did not match; the password was not changed")
+		}
+	}
+	return saveSealed(cfgPath, "password_encrypted", pw, "password", "password_file", "password_command")
+}
+
+func askOTPSecret(cfgPath string, saved, required bool) error {
+	prompt := "Authenticator secret, base32 or otpauth:// URI (Enter if the account has none): "
+	if saved {
+		prompt = "Authenticator secret (Enter keeps the saved one): "
+	}
+	secret, err := readSecret(prompt)
+	if err != nil {
+		return err
+	}
+	if secret = strings.TrimSpace(secret); secret == "" {
+		if required && !saved {
+			return errors.New("no secret entered")
+		}
+		return nil
 	}
 	otp, err := otpKey(secret)
 	if err != nil {
 		return err
 	}
-	key, err := loadKey(true)
-	if err != nil {
+	if err := saveSealed(cfgPath, "otp_secret_encrypted", secret, "otp_secret"); err != nil {
 		return err
 	}
-	sealed, err := seal(key, "otp_secret_encrypted", secret)
-	if err != nil {
+	fmt.Fprintf(os.Stderr, "Current one-time password: %s (it should match your authenticator app)\n", freshTOTP(otp))
+	return nil
+}
+
+// askGamePath accepts the install folder, its game/ or boot/ folder, or an exe inside them.
+func askGamePath(cfgPath, current string) error {
+	prompt := "Game folder, holding boot/ and game/ (Enter to skip; the Steam command names it): "
+	if current != "" {
+		prompt = fmt.Sprintf("Game folder [%s]: ", current)
+	}
+	for tries := 0; tries < 3; tries++ {
+		path, err := readLine(prompt)
+		if err != nil {
+			return err
+		}
+		if path = expandHome(strings.Trim(strings.TrimSpace(path), `"'`)); path == "" {
+			return nil
+		}
+		if abs, err := filepath.Abs(path); err == nil {
+			path = abs
+		}
+		var problem error
+		for _, root := range []string{path, installRootFromExe(filepath.Join(path, "x")), installRootFromExe(path)} {
+			if root == "" {
+				continue
+			}
+			if problem = (install{root: root}).validate(); problem == nil {
+				return setConfigValue(cfgPath, "game_path", root)
+			}
+		}
+		fmt.Fprintln(os.Stderr, problem)
+	}
+	return errors.New("no valid game folder entered")
+}
+
+func setUsername(cfgPath string) error {
+	return askUsername(cfgPath, savedUsername(rawConfig(cfgPath)))
+}
+
+func setPassword(cfgPath string) error {
+	return askPassword(cfgPath, false)
+}
+
+func setOTPSecret(cfgPath string) error {
+	return askOTPSecret(cfgPath, false, true)
+}
+
+// setup asks for everything the config needs, so it never has to be edited by hand.
+func setup(cfgPath string) error {
+	if _, err := os.Stat(cfgPath); errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
+			return err
+		}
+		header := "# Written by `xivlite setup`; run it again to change these. config.example lists the other settings.\n"
+		if err := os.WriteFile(cfgPath, []byte(header), 0o600); err != nil {
+			return err
+		}
+	}
+	raw := rawConfig(cfgPath)
+	fmt.Fprintf(os.Stderr, "Setting up %s. Secrets are saved encrypted; press Enter to keep a saved value.\n", cfgPath)
+	if err := askUsername(cfgPath, savedUsername(raw)); err != nil {
 		return err
 	}
-	if err := setConfigValue(cfgPath, "otp_secret_encrypted", sealed, "otp_secret"); err != nil {
+	hasPassword := raw["password"] != "" || raw["password_file"] != "" || raw["password_encrypted"] != "" || raw["password_command"] != ""
+	if err := askPassword(cfgPath, hasPassword); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "Saved the authenticator secret encrypted in %s. Current code: %s (compare it with your authenticator app).\n",
-		cfgPath, freshTOTP(otp))
+	if err := askOTPSecret(cfgPath, raw["otp_secret"] != "" || raw["otp_secret_encrypted"] != "", false); err != nil {
+		return err
+	}
+	if err := askGamePath(cfgPath, raw["game_path"]); err != nil {
+		return err
+	}
+	if _, err := loadConfig(cfgPath); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, "Saved. `xivlite login` tries the login without starting the game.")
 	return nil
 }
